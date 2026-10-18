@@ -92,6 +92,12 @@ const Composer = () => {
 
   // The header and toolbar float above the list, like the post composer.
   const thresholdOffset = {start: headerHeight, end: toolbarHeight};
+  // Keep the scroll indicator between the header and the toolbar.
+  // Safe area insets are already part of the header and toolbar heights.
+  const scrollIndicatorProps = {
+    scrollIndicatorInsets: {top: headerHeight, bottom: toolbarHeight},
+    automaticallyAdjustsScrollIndicatorInsets: false,
+  };
   const contentContainerStyle = {
     paddingTop: headerHeight,
     paddingBottom: toolbarHeight,
@@ -102,7 +108,8 @@ const Composer = () => {
       {nested ? (
         <ScrollViewContainer
           style={styles.screen}
-          contentContainerStyle={contentContainerStyle}>
+          contentContainerStyle={contentContainerStyle}
+          {...scrollIndicatorProps}>
           <View style={styles.nestedHeader}>
             <Text style={styles.cardTitle}>Content above the list</Text>
           </View>
@@ -123,6 +130,7 @@ const Composer = () => {
           keyExtractor={keyExtractor}
           contentContainerStyle={contentContainerStyle}
           autoscrollThresholdOffset={thresholdOffset}
+          {...scrollIndicatorProps}
         />
       )}
 
