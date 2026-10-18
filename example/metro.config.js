@@ -27,7 +27,7 @@ const config = {
   resolver: {
     ...defaultConfig.resolver,
 
-    blacklistRE: modules.map(
+    blockList: modules.map(
       m => new RegExp(`^${escape(path.join(root, 'node_modules', m))}\\/.*$`),
     ),
 

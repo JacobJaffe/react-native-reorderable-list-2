@@ -1,7 +1,6 @@
 {
   "extends": "@react-native/typescript-config",
   "compilerOptions": {
-    "types": ["jest"],
     "paths": {
       "react-native-reorderable-list": ["../src/index"],
       "react-native": ["../node_modules/react-native"],
