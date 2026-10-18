@@ -387,6 +387,22 @@ const ReorderableListCore = <T,>(
 
           gestureState.value = e.state;
         })
+        .onTouchesUp(e => {
+          'worklet';
+
+          // A pan that never activates (e.g. long press and release without moving)
+          // might not call onEnd and onFinalize, so release once all touches are lifted.
+          if (e.numberOfTouches === 0) {
+            gestureState.value = State.END;
+          }
+        })
+        .onTouchesCancelled(e => {
+          'worklet';
+
+          if (e.numberOfTouches === 0) {
+            gestureState.value = State.CANCELLED;
+          }
+        })
         .onFinalize(e => {
           'worklet';
 
