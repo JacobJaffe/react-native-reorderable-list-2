@@ -38,8 +38,8 @@ import Animated, {
   useAnimatedScrollHandler,
   useComposedEventHandler,
   useDerivedValue,
+  useFrameCallback,
   useSharedValue,
-  withDelay,
   withTiming,
 } from 'react-native-reanimated';
 
@@ -47,6 +47,7 @@ import {ReorderableListContext} from '../contexts';
 import {ReorderableListProps, ReorderableListState} from '../types';
 import {
   AUTOSCROLL_CONFIG,
+  AUTOSCROLL_DEBUG,
   OPACITY_ANIMATION_CONFIG_DEFAULT,
   SCALE_ANIMATION_CONFIG_DEFAULT,
 } from './constants';
@@ -79,10 +80,12 @@ const ReorderableListCore = <T,>(
     autoscrollThreshold = 0.1,
     autoscrollThresholdOffset,
     autoscrollSpeedScale = 1,
-    autoscrollDelay = AUTOSCROLL_CONFIG.delay,
+    // Deprecated: autoscroll is continuous, destructured to avoid passing it to the list.
+    autoscrollDelay: _autoscrollDelay,
     autoscrollActivationDelta = 5,
     animationDuration = 200,
     onLayout,
+    onContentSizeChange,
     onReorder,
     onScroll,
     onDragStart,
@@ -128,6 +131,7 @@ const ReorderableListCore = <T,>(
   const startItemDragCenterXY = useSharedValue<number>(0);
   const flatListScrollOffsetXY = useSharedValue(0);
   const flatListSize = useSharedValue(0);
+  const flatListContentSize = useSharedValue(0);
   const flatListPageXY = useSharedValue(0);
   // The scroll x or y translation of the list since drag start
   const dragScrollTranslationXY = useSharedValue(0);
@@ -143,8 +147,6 @@ const ReorderableListCore = <T,>(
   // We need to track data length since itemOffset and itemSize might contain more data than we need.
   // e.g. items are removed from the list, in which case layout data for those items is set to 0.
   const itemCount = useSharedValue(data.length);
-  const autoscrollTrigger = useSharedValue(-1);
-  const lastAutoscrollTrigger = useSharedValue(-1);
   const dragXY = useSharedValue(0);
   const currentIndex = useSharedValue(-1);
   const draggedIndex = useSharedValue(-1);
@@ -461,6 +463,13 @@ const ReorderableListCore = <T,>(
     ],
   );
 
+  // Declared before the autoscroll frame callback since it's used by worklets defined earlier.
+  const autoscrollFrameCallbackRef =
+    useRef<ReturnType<typeof useFrameCallback>>();
+  const setAutoscrollFrameCallbackActive = useCallback((active: boolean) => {
+    autoscrollFrameCallbackRef.current?.setActive(active);
+  }, []);
+
   const resetSharedValues = useCallback(() => {
     'worklet';
 
@@ -653,6 +662,7 @@ const ReorderableListCore = <T,>(
 
         // enable back scroll on releasing
         runOnJS(setScrollEnabled)(true);
+        runOnJS(setAutoscrollFrameCallbackActive)(false);
 
         if (shouldUpdateActiveItem) {
           runOnJS(setActiveIndex)(-1);
@@ -867,68 +877,161 @@ const ReorderableListCore = <T,>(
       ) {
         setCurrentIndex();
 
-        // Trigger autoscroll when:
+        // Autoscroll when:
         // 1. Within the threshold area (start or end of list)
         // 2. Have dragged in the same direction as the scroll
-        // 3. Not already in autoscroll mode
-        if (dragDirection.value === scrollDirection()) {
-          // When the first two conditions are met and it's already in autoscroll mode,
-          // we let it continue (no-op).
+        // The frame callback below performs the actual scrolling while in autoscroll mode.
+        const direction = scrollDirection();
+        if (direction !== 0 && dragDirection.value === direction) {
           if (state.value !== ReorderableListState.AUTOSCROLL) {
             state.value = ReorderableListState.AUTOSCROLL;
-            lastAutoscrollTrigger.value = autoscrollTrigger.value;
-            autoscrollTrigger.value *= -1;
+
+            if (AUTOSCROLL_DEBUG) {
+              // eslint-disable-next-line no-console
+              console.log('[autoscroll] enter', {
+                direction,
+                listOffset: flatListScrollOffsetXY.value,
+                listSize: flatListSize.value,
+                contentSize: flatListContentSize.value,
+                containerOffset: scrollViewScrollOffsetXY?.value,
+              });
+            }
           }
         } else if (state.value === ReorderableListState.AUTOSCROLL) {
           state.value = ReorderableListState.DRAGGED;
-        }
-      }
-    },
-  );
 
-  useAnimatedReaction(
-    () => autoscrollTrigger.value,
-    () => {
-      if (
-        autoscrollTrigger.value !== lastAutoscrollTrigger.value &&
-        state.value === ReorderableListState.AUTOSCROLL
-      ) {
-        const autoscrollIncrement =
-          dragDirection.value *
-          AUTOSCROLL_CONFIG.increment *
-          autoscrollSpeedScale;
-
-        if (autoscrollIncrement !== 0) {
-          let scrollOffset = flatListScrollOffsetXY.value;
-          let listRef =
-            flatListRef as unknown as AnimatedRef<Animated.ScrollView>;
-
-          // Checking on every autoscroll whether to scroll the container,
-          // this allows to smoothly pass the scroll from the container to the nested list
-          // without any gesture input.
-          if (
-            scrollViewScrollOffsetXY &&
-            shouldScrollContainer(getRelativeContainerXY())
-          ) {
-            scrollOffset = scrollViewScrollOffsetXY.value;
-            listRef =
-              scrollViewContainerRef as unknown as AnimatedRef<Animated.ScrollView>;
+          if (AUTOSCROLL_DEBUG) {
+            // eslint-disable-next-line no-console
+            console.log('[autoscroll] exit', {
+              listOffset: flatListScrollOffsetXY.value,
+              containerOffset: scrollViewScrollOffsetXY?.value,
+            });
           }
-          const scrollToValue = scrollOffset + autoscrollIncrement;
-
-          scrollTo(
-            listRef,
-            horizontalProp.value ? scrollToValue : 0,
-            horizontalProp.value ? 0 : scrollToValue,
-            true,
-          );
         }
       }
     },
   );
+
+  const contentInsetStart = rest.horizontal
+    ? rest.contentInset?.left || 0
+    : rest.contentInset?.top || 0;
+  const contentInsetEnd = rest.horizontal
+    ? rest.contentInset?.right || 0
+    : rest.contentInset?.bottom || 0;
+
+  // Scrolls by a constant speed on every frame while in autoscroll mode.
+  // While autoscrolling, the frame callback owns the scroll offsets and the scroll
+  // handlers do not update them, scroll events might arrive late with stale values.
+  const autoscrollFrameCallback = useFrameCallback(frameInfo => {
+    'worklet';
+
+    if (state.value !== ReorderableListState.AUTOSCROLL) {
+      return;
+    }
+
+    if (scrollViewScrollOffsetXY) {
+      // Scroll events of the container might be stale, restore the offset of the last autoscroll step.
+      scrollViewScrollOffsetXY.value =
+        scrollViewDragInitialScrollOffsetXY.value +
+        scrollViewDragScrollTranslationXY.value;
+    }
+
+    const direction = scrollDirection();
+    if (direction === 0) {
+      return;
+    }
+
+    const frameDelta = Math.min(
+      frameInfo.timeSincePreviousFrame ?? AUTOSCROLL_CONFIG.defaultFrameDelta,
+      AUTOSCROLL_CONFIG.maxFrameDelta,
+    );
+    let delta =
+      (direction *
+        AUTOSCROLL_CONFIG.speed *
+        autoscrollSpeedScale *
+        frameDelta) /
+      1000;
+
+    // Checking on every frame whether to scroll the container,
+    // this allows to smoothly pass the scroll from the container to the nested list
+    // without any gesture input.
+    if (
+      scrollViewScrollOffsetXY &&
+      shouldScrollContainer(getRelativeContainerXY())
+    ) {
+      // Don't scroll the container past the edges of the nested list.
+      const hiddenArea = computeHiddenArea();
+      delta =
+        direction > 0
+          ? Math.min(delta, hiddenArea.end)
+          : Math.max(delta, -hiddenArea.start);
+
+      const scrollToValue = scrollViewScrollOffsetXY.value + delta;
+
+      scrollViewScrollOffsetXY.value = scrollToValue;
+      scrollViewDragScrollTranslationXY.value =
+        scrollToValue - scrollViewDragInitialScrollOffsetXY.value;
+
+      scrollTo(
+        scrollViewContainerRef as unknown as AnimatedRef<Animated.ScrollView>,
+        horizontalProp.value ? scrollToValue : 0,
+        horizontalProp.value ? 0 : scrollToValue,
+        false,
+      );
+    } else if (scrollable) {
+      const minOffset = -contentInsetStart;
+      const maxOffset = Math.max(
+        minOffset,
+        flatListContentSize.value - flatListSize.value + contentInsetEnd,
+      );
+      const offset = flatListScrollOffsetXY.value;
+      const scrollToValue = Math.min(
+        maxOffset,
+        Math.max(minOffset, offset + delta),
+      );
+
+      if (scrollToValue === offset) {
+        return;
+      }
+
+      flatListScrollOffsetXY.value = scrollToValue;
+      dragScrollTranslationXY.value =
+        scrollToValue - dragInitialScrollOffsetXY.value;
+
+      scrollTo(
+        flatListRef as unknown as AnimatedRef<Animated.ScrollView>,
+        horizontalProp.value ? scrollToValue : 0,
+        horizontalProp.value ? 0 : scrollToValue,
+        false,
+      );
+    } else {
+      return;
+    }
+
+    // During autoscroll the user can keep the dragged item stationary in
+    // the autoscroll area. We need to update the current item index and
+    // the item position on every scroll step. See issue #68 for details.
+    setCurrentIndex();
+
+    dragXY.value =
+      currentTranslationXY.value +
+      dragScrollTranslationXY.value +
+      scrollViewDragScrollTranslationXY.value;
+  }, false);
+
+  autoscrollFrameCallbackRef.current = autoscrollFrameCallback;
 
   // flatlist scroll handler
   const handleScroll = useAnimatedScrollHandler(e => {
+    flatListContentSize.value = horizontalProp.value
+      ? e.contentSize.width
+      : e.contentSize.height;
+
+    // The autoscroll frame callback owns the scroll offset while autoscrolling.
+    if (state.value === ReorderableListState.AUTOSCROLL) {
+      return;
+    }
+
     flatListScrollOffsetXY.value = horizontalProp.value
       ? e.contentOffset.x
       : e.contentOffset.y;
@@ -940,56 +1043,20 @@ const ReorderableListCore = <T,>(
       dragScrollTranslationXY.value =
         flatListScrollOffsetXY.value - dragInitialScrollOffsetXY.value;
     }
-
-    if (state.value === ReorderableListState.AUTOSCROLL) {
-      // During autoscroll the user can keep the dragged item stationary in
-      // the autoscroll area. We need to update the current item index and
-      // it's best to do this on scroll change for it to be always up to date.
-      // See issue #68 for details.
-      setCurrentIndex();
-
-      dragXY.value =
-        currentTranslationXY.value +
-        dragScrollTranslationXY.value +
-        scrollViewDragScrollTranslationXY.value;
-
-      lastAutoscrollTrigger.value = autoscrollTrigger.value;
-      autoscrollTrigger.value = withDelay(
-        autoscrollDelay,
-        withTiming(autoscrollTrigger.value * -1, {duration: 0}),
-      );
-    }
   });
 
   // container scroll handler
   useAnimatedReaction(
     () => scrollViewScrollOffsetXY?.value,
     value => {
-      if (value) {
+      // The autoscroll frame callback owns the scroll offset while autoscrolling.
+      if (value && state.value !== ReorderableListState.AUTOSCROLL) {
         // Checking if the list is not scrollable instead of the scrolling state.
         // Fixes a bug on iOS where the item is shifted, after autoscrolling and then
         // moving away from the area.
         if (!currentScrollEnabled.value) {
           scrollViewDragScrollTranslationXY.value =
             value - scrollViewDragInitialScrollOffsetXY.value;
-        }
-
-        if (state.value === ReorderableListState.AUTOSCROLL) {
-          // During autoscroll the user can keep the dragged item stationary in
-          // the autoscroll area. We need to update the current item index and
-          // it's best to do this on scroll change for it to be always up to date.
-          // See issue #68 for details.
-          setCurrentIndex();
-
-          dragXY.value =
-            currentTranslationXY.value +
-            scrollViewDragScrollTranslationXY.value;
-
-          lastAutoscrollTrigger.value = autoscrollTrigger.value;
-          autoscrollTrigger.value = withDelay(
-            autoscrollDelay,
-            withTiming(autoscrollTrigger.value * -1, {duration: 0}),
-          );
         }
       }
     },
@@ -1024,6 +1091,7 @@ const ReorderableListCore = <T,>(
         state.value = ReorderableListState.DRAGGED;
 
         runOnJS(setScrollEnabled)(false);
+        runOnJS(setAutoscrollFrameCallbackActive)(true);
 
         // run animation before onDragStart to avoid potentially waiting for it
         runDefaultDragAnimations('start');
@@ -1038,6 +1106,7 @@ const ReorderableListCore = <T,>(
       scrollViewScrollOffsetXY,
       scrollViewDragInitialScrollOffsetXY,
       setScrollEnabled,
+      setAutoscrollFrameCallbackActive,
       currentIndex,
       dropIndicatorTranslationXY,
       itemOffset,
@@ -1090,6 +1159,14 @@ const ReorderableListCore = <T,>(
       scrollViewScrollOffsetXY,
       onLayout,
     ],
+  );
+
+  const handleContentSizeChange = useCallback(
+    (width: number, height: number) => {
+      flatListContentSize.value = horizontalProp.value ? width : height;
+      onContentSizeChange?.(width, height);
+    },
+    [flatListContentSize, horizontalProp, onContentSizeChange],
   );
 
   const handleRef = useCallback(
@@ -1146,6 +1223,7 @@ const ReorderableListCore = <T,>(
           keyExtractor={keyExtractor}
           CellRendererComponent={renderAnimatedCell}
           onLayout={handleFlatListLayout}
+          onContentSizeChange={handleContentSizeChange}
           onScroll={composedScrollHandler}
           scrollEventThrottle={1}
           removeClippedSubviews={false}

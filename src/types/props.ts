@@ -109,13 +109,12 @@ export interface ReorderableListProps<T>
     end?: number;
   };
   /**
-   * Scales the autoscroll spreed at which the list scrolls when an item is dragged to the scroll areas. Default: `1`.
+   * Scales the autoscroll speed at which the list scrolls when an item is dragged to the scroll areas. Default: `1` (600 pixels per second).
    */
   autoscrollSpeedScale?: number;
   /**
-   * Delay in between autoscroll triggers. Can be used to tune the autoscroll smoothness.
-   * Default Android: `0`.
-   * Default iOS: `100`.
+   * @deprecated Autoscroll is now continuous and this prop has no effect.
+   * Use `autoscrollSpeedScale` to tune the autoscroll speed.
    */
   autoscrollDelay?: number;
   /**

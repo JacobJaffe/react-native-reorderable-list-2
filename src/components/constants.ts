@@ -1,38 +1,16 @@
-import {Platform} from 'react-native';
-
 import {Easing, WithTimingConfig} from 'react-native-reanimated';
 
-const IOS_AUTOSCROLL_CONFIG = {
-  delay: 80,
-  increment: 100,
+export const AUTOSCROLL_CONFIG = {
+  // Autoscroll speed in pixels per second, scaled by `autoscrollSpeedScale`.
+  speed: 600,
+  // Upper bound for the time delta of a single frame, prevents big jumps after dropped frames.
+  maxFrameDelta: 34,
+  // Time delta used when the previous frame time is not available (e.g. first frame).
+  defaultFrameDelta: 1000 / 60,
 };
 
-const ANDROID_FABRIC_AUTOSCROLL_CONFIG = {
-  delay: 50,
-  increment: 80,
-};
-
-const ANDROID_PAPER_AUTOSCROLL_CONFIG = {
-  delay: 10,
-  increment: 4,
-};
-
-export const IS_FABRIC =
-  global && typeof global === 'object' && 'nativeFabricUIManager' in global;
-
-export const AUTOSCROLL_CONFIG = Platform.select({
-  // autoscroll behaves differently with Fabric and Paper on Android
-  android: IS_FABRIC
-    ? ANDROID_FABRIC_AUTOSCROLL_CONFIG
-    : ANDROID_PAPER_AUTOSCROLL_CONFIG,
-  ios: IOS_AUTOSCROLL_CONFIG,
-
-  // unsupported platforms
-  web: IOS_AUTOSCROLL_CONFIG,
-  macos: IOS_AUTOSCROLL_CONFIG,
-  windows: IOS_AUTOSCROLL_CONFIG,
-  native: IOS_AUTOSCROLL_CONFIG,
-});
+// TODO: temporary, remove before upstreaming.
+export const AUTOSCROLL_DEBUG = __DEV__;
 
 const DURATION_START = 150;
 const DURATION_END = 200;
