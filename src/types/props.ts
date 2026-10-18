@@ -124,6 +124,13 @@ export interface ReorderableListProps<T>
    */
   autoscrollActivationDelta?: number;
   /**
+   * When an item is dropped outside of the visible area, the list scrolls to bring it into view.
+   * This is the margin kept visible before or after the dropped item, so that the neighboring items
+   * are partially visible. The visible area excludes `autoscrollThresholdOffset`.
+   * Default: `32`.
+   */
+  scrollToDroppedItemMargin?: number;
+  /**
    * Duration of the animations in milliseconds.
    * Be aware that users won't be able to drag a new item until the dragged item is released and
    * its animation to its new position ends.

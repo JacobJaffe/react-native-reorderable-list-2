@@ -83,6 +83,7 @@ const ReorderableListCore = <T,>(
     // Deprecated: autoscroll is continuous, destructured to avoid passing it to the list.
     autoscrollDelay: _autoscrollDelay,
     autoscrollActivationDelta = 5,
+    scrollToDroppedItemMargin = 32,
     animationDuration = 200,
     onLayout,
     onContentSizeChange,
@@ -170,6 +171,9 @@ const ReorderableListCore = <T,>(
   const animationDurationProp = usePropAsSharedValue(animationDuration);
   const autoscrollActivationDeltaProp = usePropAsSharedValue(
     autoscrollActivationDelta,
+  );
+  const scrollToDroppedItemMarginProp = usePropAsSharedValue(
+    scrollToDroppedItemMargin,
   );
   const dragEnabledProp = usePropAsSharedValue(dragEnabled ?? true);
   const horizontalProp = usePropAsSharedValue(!!rest.horizontal);
@@ -665,70 +669,22 @@ const ReorderableListCore = <T,>(
     [cellAnimations, scaleDefault, opacityDefault],
   );
 
-  useAnimatedReaction(
-    () => gestureState.value,
-    () => {
-      if (
-        gestureState.value !== State.ACTIVE &&
-        gestureState.value !== State.BEGAN &&
-        (state.value === ReorderableListState.DRAGGED ||
-          state.value === ReorderableListState.AUTOSCROLL)
-      ) {
-        state.value = ReorderableListState.RELEASED;
+  const getThresholdOffset = useCallback(() => {
+    'worklet';
 
-        // enable back scroll on releasing
-        runOnJS(setScrollEnabled)(true);
-        runOnJS(setAutoscrollFrameCallbackActive)(false);
-
-        if (shouldUpdateActiveItem) {
-          runOnJS(setActiveIndex)(-1);
-        }
-
-        // Trigger onDragEnd event.
-        let e = {from: draggedIndex.value, to: currentIndex.value};
-        onDragEnd?.(e);
-
-        const handlers = dragEndHandlers.value[draggedIndex.value];
-        if (Array.isArray(handlers)) {
-          handlers.forEach(fn => fn(e.from, e.to));
-        }
-
-        // they are actually swapped on drag translation
-        const currentItemOffset = itemOffset.value[draggedIndex.value];
-        const currentItemSize = itemSize.value[draggedIndex.value];
-        const draggedItemOffset = itemOffset.value[currentIndex.value];
-        const draggedItemSize = itemSize.value[currentIndex.value];
-
-        const newPositionXY =
-          currentIndex.value > draggedIndex.value
-            ? draggedItemOffset - currentItemOffset
-            : draggedItemOffset -
-              currentItemOffset +
-              (draggedItemSize - currentItemSize);
-
-        runDefaultDragAnimations('end');
-
-        if (dragXY.value !== newPositionXY) {
-          // Animate dragged item to its new position on release.
-          dragXY.value = withTiming(
-            newPositionXY,
-            {
-              duration: animationDurationProp.value,
-              easing: Easing.out(Easing.ease),
-            },
-            () => {
-              runOnJS(reorder)(draggedIndex.value, currentIndex.value);
-            },
-          );
-        } else {
-          // User might drag and release the item without moving it so,
-          // since the animation end callback is not executed in that case
-          // we need to reset values as the reorder function would do.
-          runOnJS(resetSharedValuesAfterAnimations)();
-        }
-      }
-    },
-  );
+    return {
+      start: Math.max(
+        0,
+        autoscrollThresholdOffset?.start || autoscrollThresholdOffset?.top || 0,
+      ),
+      end: Math.max(
+        0,
+        autoscrollThresholdOffset?.end ||
+          autoscrollThresholdOffset?.bottom ||
+          0,
+      ),
+    };
+  }, [autoscrollThresholdOffset]);
 
   const computeHiddenArea = useCallback(() => {
     'worklet';
@@ -761,14 +717,7 @@ const ReorderableListCore = <T,>(
 
     const hiddenArea = computeHiddenArea();
 
-    const offsetStart = Math.max(
-      0,
-      autoscrollThresholdOffset?.start || autoscrollThresholdOffset?.top || 0,
-    );
-    const offsetEnd = Math.max(
-      0,
-      autoscrollThresholdOffset?.end || autoscrollThresholdOffset?.bottom || 0,
-    );
+    const {start: offsetStart, end: offsetEnd} = getThresholdOffset();
     const threshold = Math.max(0, Math.min(autoscrollThreshold, 0.4));
     const visibleSize =
       flatListSize.value -
@@ -782,8 +731,8 @@ const ReorderableListCore = <T,>(
     return {start, end, size: area};
   }, [
     computeHiddenArea,
+    getThresholdOffset,
     autoscrollThreshold,
-    autoscrollThresholdOffset,
     flatListSize,
   ]);
 
@@ -793,14 +742,7 @@ const ReorderableListCore = <T,>(
       return {start: -Infinity, end: Infinity, size: 0};
     }
 
-    const offsetStart = Math.max(
-      0,
-      autoscrollThresholdOffset?.start || autoscrollThresholdOffset?.top || 0,
-    );
-    const offsetEnd = Math.max(
-      0,
-      autoscrollThresholdOffset?.end || autoscrollThresholdOffset?.bottom || 0,
-    );
+    const {start: offsetStart, end: offsetEnd} = getThresholdOffset();
     const threshold = Math.max(0, Math.min(autoscrollThreshold, 0.4));
     const visibleSize = scrollViewSize.value - (offsetStart + offsetEnd);
 
@@ -809,7 +751,7 @@ const ReorderableListCore = <T,>(
     const end = scrollViewSize.value - area - offsetEnd;
 
     return {start, end, size: area};
-  }, [autoscrollThreshold, autoscrollThresholdOffset, scrollViewSize]);
+  }, [getThresholdOffset, autoscrollThreshold, scrollViewSize]);
 
   const shouldScrollContainer = useCallback(
     (y: number) => {
@@ -1061,6 +1003,190 @@ const ReorderableListCore = <T,>(
   }, false);
 
   autoscrollFrameCallbackRef.current = autoscrollFrameCallback;
+
+  /**
+   * Scrolls the list, or the container for a non scrollable nested list, so that the
+   * dropped item is entirely visible within the area not covered by the threshold offsets.
+   */
+  const scrollToDroppedItem = useCallback(() => {
+    'worklet';
+
+    const slotStart = itemOffset.value[currentIndex.value];
+    const slotSize = itemSize.value[currentIndex.value];
+    if (slotStart === undefined || slotSize === undefined) {
+      return;
+    }
+
+    const thresholdOffset = getThresholdOffset();
+
+    // Computes the scroll offset that brings the item into view, keeping a margin around it
+    // so that the neighboring items are partially visible. When the item and its margins
+    // don't fit in the visible area, the margin is reduced and the item start is aligned.
+    const computeTarget = (
+      offset: number,
+      viewportSize: number,
+      itemStart: number,
+    ) => {
+      'worklet';
+
+      const visibleSize =
+        viewportSize - thresholdOffset.start - thresholdOffset.end;
+      const margin = Math.max(
+        0,
+        Math.min(
+          scrollToDroppedItemMarginProp.value,
+          (visibleSize - slotSize) / 2,
+        ),
+      );
+      const visibleStart = offset + thresholdOffset.start + margin;
+      const visibleEnd = offset + viewportSize - thresholdOffset.end - margin;
+      const itemEnd = itemStart + slotSize;
+
+      if (itemStart < visibleStart || slotSize > visibleEnd - visibleStart) {
+        return itemStart - thresholdOffset.start - margin;
+      }
+
+      if (itemEnd > visibleEnd) {
+        return itemEnd - viewportSize + thresholdOffset.end + margin;
+      }
+
+      return offset;
+    };
+
+    if (scrollable) {
+      const offset = flatListScrollOffsetXY.value;
+      const minOffset = -contentInsetStart;
+      const maxOffset = Math.max(
+        minOffset,
+        flatListContentSize.value - flatListSize.value + contentInsetEnd,
+      );
+      const target = Math.min(
+        maxOffset,
+        Math.max(
+          minOffset,
+          computeTarget(offset, flatListSize.value, slotStart),
+        ),
+      );
+
+      if (Math.abs(target - offset) > 0.5) {
+        scrollTo(
+          flatListRef as unknown as AnimatedRef<Animated.ScrollView>,
+          horizontalProp.value ? target : 0,
+          horizontalProp.value ? 0 : target,
+          true,
+        );
+      }
+    } else if (scrollViewScrollOffsetXY && scrollViewSize) {
+      const offset = scrollViewScrollOffsetXY.value;
+      // Don't scroll the container past the edges of the nested list.
+      const hiddenArea = computeHiddenArea();
+      const target = Math.min(
+        offset + hiddenArea.end,
+        Math.max(
+          offset - hiddenArea.start,
+          computeTarget(
+            offset,
+            scrollViewSize.value,
+            nestedFlatListPositionXY.value + slotStart,
+          ),
+        ),
+      );
+
+      if (Math.abs(target - offset) > 0.5) {
+        scrollTo(
+          scrollViewContainerRef as unknown as AnimatedRef<Animated.ScrollView>,
+          horizontalProp.value ? target : 0,
+          horizontalProp.value ? 0 : target,
+          true,
+        );
+      }
+    }
+  }, [
+    itemOffset,
+    itemSize,
+    currentIndex,
+    getThresholdOffset,
+    scrollToDroppedItemMarginProp,
+    scrollable,
+    flatListScrollOffsetXY,
+    contentInsetStart,
+    contentInsetEnd,
+    flatListContentSize,
+    flatListSize,
+    flatListRef,
+    horizontalProp,
+    scrollViewScrollOffsetXY,
+    scrollViewSize,
+    computeHiddenArea,
+    nestedFlatListPositionXY,
+    scrollViewContainerRef,
+  ]);
+
+  useAnimatedReaction(
+    () => gestureState.value,
+    () => {
+      if (
+        gestureState.value !== State.ACTIVE &&
+        gestureState.value !== State.BEGAN &&
+        (state.value === ReorderableListState.DRAGGED ||
+          state.value === ReorderableListState.AUTOSCROLL)
+      ) {
+        state.value = ReorderableListState.RELEASED;
+
+        // enable back scroll on releasing
+        runOnJS(setScrollEnabled)(true);
+        runOnJS(setAutoscrollFrameCallbackActive)(false);
+
+        if (shouldUpdateActiveItem) {
+          runOnJS(setActiveIndex)(-1);
+        }
+
+        // Trigger onDragEnd event.
+        let e = {from: draggedIndex.value, to: currentIndex.value};
+        onDragEnd?.(e);
+
+        const handlers = dragEndHandlers.value[draggedIndex.value];
+        if (Array.isArray(handlers)) {
+          handlers.forEach(fn => fn(e.from, e.to));
+        }
+
+        // they are actually swapped on drag translation
+        const currentItemOffset = itemOffset.value[draggedIndex.value];
+        const currentItemSize = itemSize.value[draggedIndex.value];
+        const draggedItemOffset = itemOffset.value[currentIndex.value];
+        const draggedItemSize = itemSize.value[currentIndex.value];
+
+        const newPositionXY =
+          currentIndex.value > draggedIndex.value
+            ? draggedItemOffset - currentItemOffset
+            : draggedItemOffset -
+              currentItemOffset +
+              (draggedItemSize - currentItemSize);
+
+        runDefaultDragAnimations('end');
+        scrollToDroppedItem();
+
+        if (dragXY.value !== newPositionXY) {
+          // Animate dragged item to its new position on release.
+          dragXY.value = withTiming(
+            newPositionXY,
+            {
+              duration: animationDurationProp.value,
+              easing: Easing.out(Easing.ease),
+            },
+            () => {
+              runOnJS(reorder)(draggedIndex.value, currentIndex.value);
+            },
+          );
+        } else {
+          // User might drag and release the item without moving it so,
+          // since the animation end callback is not executed in that case
+          // we need to reset values as the reorder function would do.
+          runOnJS(resetSharedValuesAfterAnimations)();
+        }
+      }
+    },
+  );
 
   // flatlist scroll handler
   const handleScroll = useAnimatedScrollHandler(e => {
