@@ -11,9 +11,6 @@ export const AUTOSCROLL_CONFIG = {
   defaultFrameDelta: 1000 / 60,
 };
 
-// TODO: temporary, remove before upstreaming.
-export const AUTOSCROLL_DEBUG = __DEV__;
-
 const DURATION_START = 150;
 const DURATION_END = 200;
 

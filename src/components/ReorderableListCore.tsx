@@ -47,7 +47,6 @@ import {ReorderableListContext} from '../contexts';
 import {ReorderableListProps, ReorderableListState} from '../types';
 import {
   AUTOSCROLL_CONFIG,
-  AUTOSCROLL_DEBUG,
   OPACITY_ANIMATION_CONFIG_DEFAULT,
   SCALE_ANIMATION_CONFIG_DEFAULT,
 } from './constants';
@@ -888,14 +887,6 @@ const ReorderableListCore = <T,>(
     if (direction === 0 || dragDirection.value !== direction) {
       if (state.value === ReorderableListState.AUTOSCROLL) {
         state.value = ReorderableListState.DRAGGED;
-
-        if (AUTOSCROLL_DEBUG) {
-          // eslint-disable-next-line no-console
-          console.log('[autoscroll] exit', {
-            listOffset: flatListScrollOffsetXY.value,
-            containerOffset: scrollViewScrollOffsetXY?.value,
-          });
-        }
       }
 
       return;
@@ -903,18 +894,6 @@ const ReorderableListCore = <T,>(
 
     if (state.value !== ReorderableListState.AUTOSCROLL) {
       state.value = ReorderableListState.AUTOSCROLL;
-
-      if (AUTOSCROLL_DEBUG) {
-        // eslint-disable-next-line no-console
-        console.log('[autoscroll] enter', {
-          direction,
-          depth,
-          listOffset: flatListScrollOffsetXY.value,
-          listSize: flatListSize.value,
-          contentSize: flatListContentSize.value,
-          containerOffset: scrollViewScrollOffsetXY?.value,
-        });
-      }
     }
 
     // Ease in so that the speed changes gently near the inner edge of the area.
