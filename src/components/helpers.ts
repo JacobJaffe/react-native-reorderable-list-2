@@ -34,3 +34,20 @@ export const applyAnimatedStyles = (
 
   return target;
 };
+
+/**
+ * Runs `requestIdleCallback` or falls back to `setTimeout`.
+ *
+ * @param fn - The target function to execute.
+ *
+ * @returns The cancel or clear function.
+ */
+export const deferIdleTask = (fn: () => void): (() => void) => {
+  if (typeof requestIdleCallback === 'function') {
+    const handle = requestIdleCallback(() => fn());
+    return () => cancelIdleCallback?.(handle);
+  }
+
+  const timeout = setTimeout(fn, 0);
+  return () => clearTimeout(timeout);
+};

@@ -12,7 +12,6 @@ import {
   CellRendererProps,
   FlatList,
   FlatListProps,
-  InteractionManager,
   LayoutChangeEvent,
   Platform,
   ScrollView,
@@ -53,6 +52,7 @@ import {
 } from './constants';
 import {ReorderableListCell} from './ReorderableListCell';
 import {usePropAsSharedValue, useStableCallback} from '../hooks';
+import {deferIdleTask} from './helpers';
 
 const AnimatedFlatList = Animated.createAnimatedComponent(
   FlatList,
@@ -205,7 +205,7 @@ const ReorderableListCore = <T,>(
     }
 
     // Can be heavy to loop through all items, defer the task to run after interactions.
-    const task = InteractionManager.runAfterInteractions(() => {
+    return deferIdleTask(() => {
       if (!markedCellsRef.current) {
         return;
       }
@@ -220,10 +220,6 @@ const ReorderableListCore = <T,>(
 
       markedCellsRef.current = map;
     });
-
-    return () => {
-      task.cancel();
-    };
   }, [data]);
 
   const createCellKey = useCallback((cellKey: string) => {
