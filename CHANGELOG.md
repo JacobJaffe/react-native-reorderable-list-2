@@ -1,5 +1,12 @@
 
 
+## [0.18.2](https://github.com/omahili/react-native-reorderable-list/compare/v0.18.1...v0.18.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* replace deprecated InteractionManager ([a2e5d68](https://github.com/omahili/react-native-reorderable-list/commit/a2e5d682abb21b40eae50c749ed0b2990b99f549)), closes [#73](https://github.com/omahili/react-native-reorderable-list/issues/73)
+
 ## [0.18.1](https://github.com/omahili/react-native-reorderable-list/compare/v0.18.0...v0.18.1) (2026-07-12)
 
 
