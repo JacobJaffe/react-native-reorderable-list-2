@@ -109,7 +109,7 @@ export interface ReorderableListProps<T>
     end?: number;
   };
   /**
-   * Scales the autoscroll speed at which the list scrolls when an item is dragged to the scroll areas. Default: `1` (600 pixels per second).
+   * Scales the autoscroll speed at which the list scrolls when an item is dragged to the scroll areas. The speed increases with the depth into the area, from 150 pixels per second at its inner edge to 1200 at its outer edge. Default: `1`.
    */
   autoscrollSpeedScale?: number;
   /**

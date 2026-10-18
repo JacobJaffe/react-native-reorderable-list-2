@@ -779,7 +779,7 @@ const ReorderableListCore = <T,>(
     const start = area + offsetStart;
     const end = flatListSize.value - area - offsetEnd;
 
-    return {start, end};
+    return {start, end, size: area};
   }, [
     computeHiddenArea,
     autoscrollThreshold,
@@ -790,7 +790,7 @@ const ReorderableListCore = <T,>(
   const computeContainerThresholdArea = useCallback(() => {
     'worklet';
     if (!scrollViewSize) {
-      return {start: -Infinity, end: Infinity};
+      return {start: -Infinity, end: Infinity, size: 0};
     }
 
     const offsetStart = Math.max(
@@ -806,9 +806,9 @@ const ReorderableListCore = <T,>(
 
     const area = visibleSize * threshold;
     const start = area + offsetStart;
-    const end = visibleSize - area - offsetEnd;
+    const end = scrollViewSize.value - area - offsetEnd;
 
-    return {start, end};
+    return {start, end, size: area};
   }, [autoscrollThreshold, autoscrollThresholdOffset, scrollViewSize]);
 
   const shouldScrollContainer = useCallback(
@@ -848,33 +848,43 @@ const ReorderableListCore = <T,>(
     return currentXY.value + scrollViewDragScrollTranslationXY.value;
   }, [currentXY, scrollViewDragScrollTranslationXY]);
 
-  const scrollDirection = useCallback(() => {
+  /**
+   * Computes how far the dragged item is into an autoscroll area.
+   *
+   * @returns The scroll direction (`-1`, `1` or `0` when outside the autoscroll areas)
+   * and the depth into the area, from `0` at its inner edge to `1` at its outer edge.
+   */
+  const computeAutoscroll = useCallback(() => {
     'worklet';
+
+    let xy = 0;
+    let area = {start: 0, end: 0, size: 0};
 
     const relativeContainerXY = getRelativeContainerXY();
     if (shouldScrollContainer(relativeContainerXY)) {
-      const containerThresholdArea = computeContainerThresholdArea();
-      if (relativeContainerXY <= containerThresholdArea.start) {
-        return -1;
-      }
-
-      if (relativeContainerXY >= containerThresholdArea.end) {
-        return 1;
-      }
+      xy = relativeContainerXY;
+      area = computeContainerThresholdArea();
     } else if (scrollable) {
-      const relativeListXY = getRelativeListXY();
-      const thresholdArea = computeThresholdArea();
-
-      if (relativeListXY <= thresholdArea.start) {
-        return -1;
-      }
-
-      if (relativeListXY >= thresholdArea.end) {
-        return 1;
-      }
+      xy = getRelativeListXY();
+      area = computeThresholdArea();
+    } else {
+      return {direction: 0, depth: 0};
     }
 
-    return 0;
+    let direction = 0;
+    let distance = 0;
+    if (xy <= area.start) {
+      direction = -1;
+      distance = area.start - xy;
+    } else if (xy >= area.end) {
+      direction = 1;
+      distance = xy - area.end;
+    }
+
+    const depth =
+      area.size > 0 ? Math.min(1, Math.max(0, distance / area.size)) : 1;
+
+    return {direction, depth};
   }, [
     shouldScrollContainer,
     computeThresholdArea,
@@ -892,38 +902,6 @@ const ReorderableListCore = <T,>(
         state.value === ReorderableListState.AUTOSCROLL
       ) {
         setCurrentIndex();
-
-        // Autoscroll when:
-        // 1. Within the threshold area (start or end of list)
-        // 2. Have dragged in the same direction as the scroll
-        // The frame callback below performs the actual scrolling while in autoscroll mode.
-        const direction = scrollDirection();
-        if (direction !== 0 && dragDirection.value === direction) {
-          if (state.value !== ReorderableListState.AUTOSCROLL) {
-            state.value = ReorderableListState.AUTOSCROLL;
-
-            if (AUTOSCROLL_DEBUG) {
-              // eslint-disable-next-line no-console
-              console.log('[autoscroll] enter', {
-                direction,
-                listOffset: flatListScrollOffsetXY.value,
-                listSize: flatListSize.value,
-                contentSize: flatListContentSize.value,
-                containerOffset: scrollViewScrollOffsetXY?.value,
-              });
-            }
-          }
-        } else if (state.value === ReorderableListState.AUTOSCROLL) {
-          state.value = ReorderableListState.DRAGGED;
-
-          if (AUTOSCROLL_DEBUG) {
-            // eslint-disable-next-line no-console
-            console.log('[autoscroll] exit', {
-              listOffset: flatListScrollOffsetXY.value,
-              containerOffset: scrollViewScrollOffsetXY?.value,
-            });
-          }
-        }
       }
     },
   );
@@ -935,38 +913,85 @@ const ReorderableListCore = <T,>(
     ? rest.contentInset?.right || 0
     : rest.contentInset?.bottom || 0;
 
-  // Scrolls by a constant speed on every frame while in autoscroll mode.
+  // Runs on every frame while dragging. Enters autoscroll mode while the dragged item is
+  // within an autoscroll area, after being dragged towards it, and scrolls at a speed
+  // that increases with the depth into the area.
   // While autoscrolling, the frame callback owns the scroll offsets and the scroll
   // handlers do not update them, scroll events might arrive late with stale values.
   const autoscrollFrameCallback = useFrameCallback(frameInfo => {
     'worklet';
 
-    if (state.value !== ReorderableListState.AUTOSCROLL) {
+    if (
+      state.value !== ReorderableListState.DRAGGED &&
+      state.value !== ReorderableListState.AUTOSCROLL
+    ) {
       return;
     }
 
-    if (scrollViewScrollOffsetXY) {
+    if (
+      state.value === ReorderableListState.AUTOSCROLL &&
+      scrollViewScrollOffsetXY
+    ) {
       // Scroll events of the container might be stale, restore the offset of the last autoscroll step.
       scrollViewScrollOffsetXY.value =
         scrollViewDragInitialScrollOffsetXY.value +
         scrollViewDragScrollTranslationXY.value;
     }
 
-    const direction = scrollDirection();
-    if (direction === 0) {
+    const {direction, depth} = computeAutoscroll();
+
+    // Autoscroll when:
+    // 1. Within the threshold area (start or end of list)
+    // 2. Have dragged in the same direction as the scroll
+    if (direction === 0 || dragDirection.value !== direction) {
+      if (state.value === ReorderableListState.AUTOSCROLL) {
+        state.value = ReorderableListState.DRAGGED;
+
+        if (AUTOSCROLL_DEBUG) {
+          // eslint-disable-next-line no-console
+          console.log('[autoscroll] exit', {
+            listOffset: flatListScrollOffsetXY.value,
+            containerOffset: scrollViewScrollOffsetXY?.value,
+          });
+        }
+      }
+
       return;
     }
 
-    const frameDelta = Math.min(
-      frameInfo.timeSincePreviousFrame ?? AUTOSCROLL_CONFIG.defaultFrameDelta,
-      AUTOSCROLL_CONFIG.maxFrameDelta,
+    if (state.value !== ReorderableListState.AUTOSCROLL) {
+      state.value = ReorderableListState.AUTOSCROLL;
+
+      if (AUTOSCROLL_DEBUG) {
+        // eslint-disable-next-line no-console
+        console.log('[autoscroll] enter', {
+          direction,
+          depth,
+          listOffset: flatListScrollOffsetXY.value,
+          listSize: flatListSize.value,
+          contentSize: flatListContentSize.value,
+          containerOffset: scrollViewScrollOffsetXY?.value,
+        });
+      }
+    }
+
+    // Ease in so that the speed changes gently near the inner edge of the area.
+    const speed =
+      (AUTOSCROLL_CONFIG.minSpeed +
+        (AUTOSCROLL_CONFIG.maxSpeed - AUTOSCROLL_CONFIG.minSpeed) *
+          depth *
+          depth) *
+      autoscrollSpeedScale;
+    // The time since the previous frame can occasionally be negative,
+    // which would briefly reverse the scroll direction and cause jitter.
+    const frameDelta = Math.max(
+      0,
+      Math.min(
+        frameInfo.timeSincePreviousFrame ?? AUTOSCROLL_CONFIG.defaultFrameDelta,
+        AUTOSCROLL_CONFIG.maxFrameDelta,
+      ),
     );
-    let delta =
-      (direction *
-        AUTOSCROLL_CONFIG.speed *
-        autoscrollSpeedScale *
-        frameDelta) /
-      1000;
+    let delta = (direction * speed * frameDelta) / 1000;
 
     // Checking on every frame whether to scroll the container,
     // this allows to smoothly pass the scroll from the container to the nested list
