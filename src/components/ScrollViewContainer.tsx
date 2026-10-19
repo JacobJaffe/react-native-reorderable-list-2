@@ -25,7 +25,10 @@ const ScrollViewContainerWithRef = (
     useState(false);
   const scrollViewScrollEnabledProp = usePropAsSharedValue(scrollEnabled);
   const scrollViewContainerRef = useAnimatedRef<Animated.ScrollView>();
-  const scrollViewScrollOffsetXY = useSharedValue(0);
+  // The container might start scrolled through the contentOffset prop, which doesn't emit a scroll event.
+  const scrollViewScrollOffsetXY = useSharedValue(
+    (rest.horizontal ? rest.contentOffset?.x : rest.contentOffset?.y) || 0,
+  );
   const scrollViewPageXY = useSharedValue(0);
   const scrollViewSize = useSharedValue(0);
   const horizontalProp = usePropAsSharedValue(!!rest.horizontal);

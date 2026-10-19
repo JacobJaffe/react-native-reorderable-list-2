@@ -129,7 +129,10 @@ const ReorderableListCore = <T,>(
   const currentTranslationXY = useSharedValue(0);
   const currentItemDragCenterXY = useSharedValue<number | null>(null);
   const startItemDragCenterXY = useSharedValue<number>(0);
-  const flatListScrollOffsetXY = useSharedValue(0);
+  // The list might start scrolled through the contentOffset prop, which doesn't emit a scroll event.
+  const flatListScrollOffsetXY = useSharedValue(
+    (rest.horizontal ? rest.contentOffset?.x : rest.contentOffset?.y) || 0,
+  );
   const flatListSize = useSharedValue(0);
   const flatListContentSize = useSharedValue(0);
   const flatListPageXY = useSharedValue(0);
